@@ -1,8 +1,6 @@
-import cookieParser from "cookie-parser";
 import bcrypt from "bcryptjs";
 import prisma from "../db";
 import { Request, Response, NextFunction } from "express";
-import ApiError from "../lib/ApiError";
 import generateToken from "../lib/generateToken";
 import ApiResponse from "../lib/ApiResponse";
 
@@ -10,6 +8,7 @@ const cookieOptions = {
   httpOnly: true,
   secure: true,
 };
+
 const login = async (req: Request, res: Response) => {
   try {
     const { username, password } = req.body;
@@ -35,14 +34,24 @@ const login = async (req: Request, res: Response) => {
         .json(new ApiResponse(401, "incorrect password", ""));
     }
 
-    const { accessToken, refreshToken } = generateToken(user.id);
+    const tokens = await generateToken(user.id);
+    if (!tokens) {
+      return res
+        .status(500)
+        .json(new ApiResponse(500, "failed to generate tokens", ""));
+    }
+    const { accessToken, refreshToken } = tokens;
     const loggedInUser = await prisma.user.findUnique({
       where: {
         id: user.id,
       },
-      omit: {
-        password,
-        refreshToken,
+      select: {
+        id: true,
+        username: true,
+        email: true,
+        firstName: true,
+        lastName: true,
+        avatar: true,
       },
     });
     res
@@ -89,7 +98,6 @@ const signup = async (req: Request, res: Response) => {
   const salt = await bcrypt.genSalt(10);
   const hash = await bcrypt.hash(password, salt);
 
-  const { refreshToken } = generateToken();
   const newUser = await prisma.user.create({
     data: {
       username,
@@ -98,7 +106,6 @@ const signup = async (req: Request, res: Response) => {
       lastName,
       email,
       avatar,
-      refreshToken,
     },
   });
   if (!newUser) {
@@ -106,10 +113,13 @@ const signup = async (req: Request, res: Response) => {
       .status(500)
       .json(new ApiResponse(500, "error while creating the user", ""));
   }
+  return res
+    .status(200)
+    .json(new ApiResponse(200, "user created successfully", newUser));
 };
 
 const logout = async (req: Request, res: Response) => {
-  const user = await prisma.user.update({
+  await prisma.user.update({
     where: { id: req.user.id },
     data: {
       refreshToken: {
@@ -131,7 +141,6 @@ const logout = async (req: Request, res: Response) => {
     .clearCookie("refreshToken", cookieOptions)
     .json(new ApiResponse(200, "user logged out successfully", {}));
 };
-
 
 const updatePassword = async (req: Request, res: Response) => {
   const { newPassword, oldPassword } = req.body;
