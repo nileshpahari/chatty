@@ -1,6 +1,6 @@
 import bcrypt from "bcryptjs";
 import prisma from "../db";
-import { Request, Response, NextFunction } from "express";
+import { Request, Response } from "express";
 import generateToken from "../lib/generateToken";
 import ApiResponse from "../lib/ApiResponse";
 
@@ -55,10 +55,10 @@ const login = async (req: Request, res: Response) => {
       },
     });
     res
-      .status(200)
-      .json(new ApiResponse(200, "user logged in successfulyl", loggedInUser))
       .cookie("accessToken", accessToken, cookieOptions)
-      .cookie("refreshToken", refreshToken, cookieOptions);
+      .cookie("refreshToken", refreshToken, cookieOptions)
+      .status(200)
+      .json(new ApiResponse(200, "user logged in successfulyl", loggedInUser));
   } catch (error) {
     console.log(error);
     res
@@ -113,12 +113,20 @@ const signup = async (req: Request, res: Response) => {
       .status(500)
       .json(new ApiResponse(500, "error while creating the user", ""));
   }
-  return res
-    .status(200)
-    .json(new ApiResponse(200, "user created successfully", newUser));
+  return res.status(200).json(
+    new ApiResponse(200, "user created successfully", {
+      id: newUser.id,
+      username: newUser.username,
+      email: newUser.email,
+      firstName: newUser.firstName,
+      lastName: newUser.lastName,
+      avatar: newUser.avatar,
+    })
+  );
 };
 
 const logout = async (req: Request, res: Response) => {
+  console.log(req.user)
   await prisma.user.update({
     where: { id: req.user.id },
     data: {
