@@ -3,42 +3,53 @@ import prisma from "../db";
 import { Request, Response } from "express";
 import generateToken from "../lib/generateToken";
 import ApiResponse from "../lib/ApiResponse";
+import { cloudinaryUpload } from "../lib/services/cloudinary.service";
+
+// interface Request extends Request {
+//   user: {
+//     id: number;
+//     username: string;
+//     email: string;
+//     firstName: string;
+//     lastName: string;
+//     avatar: string;
+//   };
+// }
 
 const cookieOptions = {
   httpOnly: true,
   secure: true,
 };
 
-const login = async (req: Request, res: Response) => {
+const login = async (req: Request, res: Response): Promise<void> => {
   try {
-    const { username, password } = req.body;
-    if (!username || !password) {
-      return res
+    const { email, password } = req.body;
+    if (!email || !password) {
+      res
         .status(400)
         .json(new ApiResponse(400, "please give all the required details", ""));
+        return 
     }
     const user = await prisma.user.findUnique({
       where: {
-        username,
+        email,
       },
     });
     if (!user) {
-      return res
-        .status(401)
-        .json(new ApiResponse(401, "user doesnt exists", ""));
+      res.status(401).json(new ApiResponse(401, "user doesnt exists", ""));
+      return;
     }
     const isCorrect = await bcrypt.compare(password, user.password);
     if (!isCorrect) {
-      return res
-        .status(401)
-        .json(new ApiResponse(401, "incorrect password", ""));
+      res.status(401).json(new ApiResponse(401, "incorrect password", ""));
     }
 
     const tokens = await generateToken(user.id);
     if (!tokens) {
-      return res
+      res
         .status(500)
         .json(new ApiResponse(500, "failed to generate tokens", ""));
+      return;
     }
     const { accessToken, refreshToken } = tokens;
     const loggedInUser = await prisma.user.findUnique({
@@ -74,29 +85,35 @@ const login = async (req: Request, res: Response) => {
 };
 
 const signup = async (req: Request, res: Response) => {
-  const { username, email, password, firstName, lastName, avatar } = req.body;
+  const { username, email, password, firstName, lastName } = req.body;
   if (!username || !email || !password || !firstName || !lastName) {
-    return res
+    res
       .status(400)
       .json(new ApiResponse(400, "please provide all the required fields", ""));
   }
   if (password.length < 8) {
-    return res.status(400).json(new ApiResponse(400, "too short password", ""));
+    res.status(400).json(new ApiResponse(400, "too short password", ""));
   }
-  const prevUser = await prisma.user.findUnique({
+  const prevUser = await prisma.user.findFirst({
     where: {
-      email,
-      username,
+      OR: [{ email }, { username }],
     },
   });
 
   if (prevUser) {
-    return res
+    res
       .status(401)
       .json(new ApiResponse(400, "user with email already exists", ""));
   }
+
   const salt = await bcrypt.genSalt(10);
   const hash = await bcrypt.hash(password, salt);
+
+  let avatar = null;
+  const avatarLocalPath = req.file?.path;
+  if (avatarLocalPath) {
+    avatar = await cloudinaryUpload(avatarLocalPath);
+  }
 
   const newUser = await prisma.user.create({
     data: {
@@ -105,15 +122,15 @@ const signup = async (req: Request, res: Response) => {
       firstName,
       lastName,
       email,
-      avatar,
+      avatar: null,
     },
   });
   if (!newUser) {
-    return res
+    res
       .status(500)
       .json(new ApiResponse(500, "error while creating the user", ""));
   }
-  return res.status(200).json(
+  res.status(200).json(
     new ApiResponse(200, "user created successfully", {
       id: newUser.id,
       username: newUser.username,
@@ -126,9 +143,9 @@ const signup = async (req: Request, res: Response) => {
 };
 
 const logout = async (req: Request, res: Response) => {
-  console.log(req.user)
+  console.log(req.user);
   await prisma.user.update({
-    where: { id: req.user.id },
+    where: { id: req.user?.id },
     data: {
       refreshToken: {
         set: null,
@@ -144,34 +161,41 @@ const logout = async (req: Request, res: Response) => {
     },
   });
 
-  return res
+  res
     .clearCookie("accessToken", cookieOptions)
     .clearCookie("refreshToken", cookieOptions)
     .json(new ApiResponse(200, "user logged out successfully", {}));
 };
 
-const updatePassword = async (req: Request, res: Response) => {
+const updatePassword = async (req: Request, res: Response): Promise<void> => {
   const { newPassword, oldPassword } = req.body;
   const user = await prisma.user.findUnique({
     where: {
-      id: req.user.id,
+      id: req.user?.id,
     },
   });
-  const isCorrect = bcrypt.compare(oldPassword, user.password);
+  if (!user) {
+    res.status(401).json(new ApiResponse(401, "user not found", ""));
+    return;
+  }
+  const isCorrect = await bcrypt.compare(oldPassword, user.password);
 
   if (!isCorrect) {
-    return res.status(401).json(new ApiResponse(401, "incorrect password", ""));
+    res.status(401).json(new ApiResponse(401, "incorrect password", ""));
   }
+
+  const salt = await bcrypt.genSalt(10);
+  const hash = await bcrypt.hash(newPassword, salt);
 
   await prisma.user.update({
     where: {
-      id: req.user.id,
+      id: req.user?.id,
     },
     data: {
-      password: newPassword,
+      password: hash,
     },
   });
-  return res.json(new ApiResponse(200, "password updated successfully", {}));
+  res.json(new ApiResponse(200, "password updated successfully", {}));
 };
 
 const updateDetails = async (req: Request, res: Response) => {
@@ -184,13 +208,13 @@ const updateDetails = async (req: Request, res: Response) => {
   });
 
   if (prevEmail) {
-    return res
+    res
       .status(401)
       .json(new ApiResponse(401, "user with email already exists", ""));
   }
-  await prisma.user.update({
+  const newUser = await prisma.user.update({
     where: {
-      id: req.user.id,
+      id: req.user?.id,
     },
     data: {
       email,
@@ -199,6 +223,13 @@ const updateDetails = async (req: Request, res: Response) => {
       avatar,
     },
   });
+  res.status(200).json(new ApiResponse(200, "user updated successfully", newUser));
 };
 
-export { login, signup, logout, updatePassword, updateDetails };
+const currentUser = async (req: Request, res: Response) => {
+  res
+    .status(200)
+    .json(new ApiResponse(200, "user details fetched successfully", req.user));
+};
+
+export { login, signup, logout, updatePassword, updateDetails, currentUser };
